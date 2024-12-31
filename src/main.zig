@@ -5,21 +5,22 @@ const rl = @import("raylib");
 const Allocator = std.mem.Allocator;
 
 //number of tiles
-const MapHeight = 20;
-const MapWidth = 20;
+const MapHeight = 100;
+const MapWidth = 100;
 
 const WindowHeight = 800;
 const WindowWidth = 800;
 const TileWidth = WindowWidth / MapWidth;
 const TileHeight = WindowHeight / MapHeight;
 
-const tileValues = enum(u8) {
-    borderTop = 0b1,
-    borderRight = 0b10,
-    borderBottom = 0b100,
-    borderLeft = 0b1000,
-    visited = 0b10000,
-    startTile = 0b100000,
+const TileMasks = struct {
+    const BorderTop: u8 = 0b1;
+    const BorderRight: u8 = 0b10;
+    const BorderBottom: u8 = 0b100;
+    const BorderLeft: u8 = 0b1000;
+    const Visited: u8 = 0b10000;
+    const StartTile: u8 = 0b100000;
+    const EndTile: u8 = 0b1000000;
 };
 
 //[x][y] access
@@ -34,22 +35,22 @@ fn drawPass() void {
             const wx: i32 = @intCast(x * TileWidth + 1); //TODO RM +1 hack to display left border
             const wy: i32 = @intCast(y * TileHeight);
             const tile = tiles[x][y];
-            if (tile & 0b1111 != 0) {
+            if (tile & 0b1111 != 0 and false) {
                 rl.drawRectangle(wx, wy, TileWidth, TileHeight, rl.Color.white);
             } else {
-                if (tile & @intFromEnum(tileValues.startTile) != 0) {
+                if (tile & TileMasks.StartTile != 0) {
                     rl.drawRectangle(wx, wy, TileWidth, TileHeight, rl.Color.red);
                 }
-                if ((tile & @intFromEnum(tileValues.borderTop)) != 0) {
+                if ((tile & TileMasks.BorderTop) != 0) {
                     rl.drawLine(wx, wy, wx + TileWidth - 1, wy, rl.Color.white);
                 }
-                if ((tile & @intFromEnum(tileValues.borderRight)) != 0) {
+                if (tile & TileMasks.BorderRight != 0) {
                     rl.drawLine(wx + TileWidth - 1, wy, wx + TileWidth - 1, wy + TileHeight - 1, rl.Color.white);
                 }
-                if ((tile & @intFromEnum(tileValues.borderBottom)) != 0) {
+                if ((tile & TileMasks.BorderBottom) != 0) {
                     rl.drawLine(wx, wy + TileHeight - 1, wx + TileWidth - 1, wy + TileHeight - 1, rl.Color.white);
                 }
-                if ((tile & @intFromEnum(tileValues.borderLeft)) != 0) {
+                if ((tile & TileMasks.BorderLeft) != 0) {
                     rl.drawLine(wx, wy, wx, wy + TileHeight - 1, rl.Color.white);
                 }
             }
@@ -64,37 +65,56 @@ const Idx = struct { x: usize, y: usize };
 
 fn dfs_iter(stack: *std.ArrayList(Idx), map: *[MapWidth][MapHeight]u8, allocator: Allocator) !bool { //returns true when finished.
     const current = stack.getLast();
-    if (stack.items.len == 0 and (map[current.x][current.y] & @intFromEnum(tileValues.visited) != 0)) return true;
+    if (stack.items.len == 1 and (map[current.x][current.y] & TileMasks.Visited != 0)) return true;
 
     //visit here so can check end condition - if at start tile and is visited i.e. reached by backtracking and not start of DFS
-    map[current.x][current.y] |= @intFromEnum(tileValues.visited);
+    map[current.x][current.y] |= TileMasks.Visited;
 
     var unvisited = try std.ArrayList(Idx).initCapacity(allocator, 4);
 
     //check for unvisited neighbours
     if (current.x != 0) {
-        if (map[current.x - 1][current.y] & @intFromEnum(tileValues.visited) != 0)
+        if (map[current.x - 1][current.y] & TileMasks.Visited == 0)
             try unvisited.append(Idx{ .x = current.x - 1, .y = current.y });
     }
     if (current.y != 0) {
-        if (map[current.x][current.y - 1] & @intFromEnum(tileValues.visited) != 0)
+        if (map[current.x][current.y - 1] & TileMasks.Visited == 0)
             try unvisited.append(Idx{ .x = current.x, .y = current.y - 1 });
     }
     if (current.x != MapWidth - 1) {
-        if (map[current.x + 1][current.y] & @intFromEnum(tileValues.visited) != 0)
+        if (map[current.x + 1][current.y] & TileMasks.Visited == 0)
             try unvisited.append(Idx{ .x = current.x + 1, .y = current.y });
     }
     if (current.y != MapHeight - 1) {
-        if (map[current.x][current.y + 1] & @intFromEnum(tileValues.visited) != 0)
+        if (map[current.x][current.y + 1] & TileMasks.Visited == 0)
             try unvisited.append(Idx{ .x = current.x, .y = current.y + 1 });
     }
     if (unvisited.items.len == 0) { //backtrack
         _ = stack.pop();
     } else {
-        var prng = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
+        var prng = std.rand.DefaultPrng.init(@intCast(std.time.nanoTimestamp())); //TODO use next() instead of nano timestamp
         const rndn = @mod(prng.random().int(usize), unvisited.items.len);
 
-        try stack.append(unvisited.items[rndn]);
+        const chosen = unvisited.items[rndn];
+
+        //remove walls
+        if (current.x != 0 and chosen.x == current.x - 1) {
+            map[current.x][current.y] &= ~TileMasks.BorderLeft;
+            map[chosen.x][chosen.y] &= ~TileMasks.BorderRight;
+        } else if (current.x != MapWidth - 1 and chosen.x == current.x + 1) {
+            map[current.x][current.y] &= ~TileMasks.BorderRight;
+            map[chosen.x][chosen.y] &= ~TileMasks.BorderLeft;
+        } else if (current.y != 0 and chosen.y == current.y - 1) {
+            map[current.x][current.y] &= ~TileMasks.BorderTop;
+            map[chosen.x][chosen.y] &= ~TileMasks.BorderBottom;
+        } else if (current.y != MapHeight and chosen.y == current.y + 1) {
+            map[current.x][current.y] &= ~TileMasks.BorderBottom;
+            map[chosen.x][chosen.y] &= ~TileMasks.BorderTop;
+        } else {
+            unreachable;
+        }
+
+        try stack.append(chosen);
     }
     return false;
 }
@@ -106,7 +126,7 @@ pub fn main() !void {
     rl.initWindow(WindowWidth, WindowHeight, "zig raylib window");
 
     //start tile
-    tiles[5][0] = tiles[5][0] | @intFromEnum(tileValues.startTile);
+    tiles[5][0] = tiles[5][0] | TileMasks.StartTile;
     try stack.append(Idx{ .x = 5, .y = 0 });
 
     drawPass();
@@ -115,10 +135,13 @@ pub fn main() !void {
     var dfs_complete = false;
     var iteration: u32 = 0;
     while (!exit) {
-        std.debug.print("iteration: {d}\n", .{iteration});
         iteration += 1;
         if (rl.isKeyPressed(rl.KeyboardKey.escape) or rl.windowShouldClose()) exit = true;
-        if (!dfs_complete) dfs_complete = try dfs_iter(&stack, &tiles, gpa.allocator());
+        if (!dfs_complete) {
+            //std.debug.print("iteration: {d}\n", .{iteration});
+            dfs_complete = try dfs_iter(&stack, &tiles, gpa.allocator());
+            if (dfs_complete) std.debug.print("finished DFS.\n", .{});
+        }
         drawPass();
     }
 }
