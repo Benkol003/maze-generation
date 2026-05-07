@@ -15,21 +15,18 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib = b.addStaticLibrary(.{
-        .name = "zig_test",
-        // In this case the main source file is merely a path, however, in more
-        // complicated build scripts, this could be a generated file.
+    const lib = b.addLibrary(.{ .name = "zig_test", .linkage = .static, .root_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-    });
+    }) });
 
     // This declares intent for the library to be installed into the standard
     // location when the user invokes the "install" step (the default step when
     // running `zig build`).
     b.installArtifact(lib);
 
-    const raylib_dep = b.dependency("raylib-zig", .{
+    const raylib_dep = b.dependency("raylib_zig", .{
         .target = target,
         .optimize = optimize,
     });
@@ -38,14 +35,13 @@ pub fn build(b: *std.Build) void {
     const raygui = raylib_dep.module("raygui"); // raygui module
     const raylib_artifact = raylib_dep.artifact("raylib"); // raylib C library
 
-    const exe = b.addExecutable(.{
-        .name = "zig_test",
+    const exe = b.addExecutable(.{ .name = "zig_test", .root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
-    });
+    }) });
 
-    exe.linkLibrary(raylib_artifact);
+    exe.root_module.linkLibrary(raylib_artifact);
     exe.root_module.addImport("raylib", raylib);
     exe.root_module.addImport("raygui", raygui);
 
@@ -79,19 +75,19 @@ pub fn build(b: *std.Build) void {
 
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
-    const lib_unit_tests = b.addTest(.{
+    const lib_unit_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-    });
+    }) });
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
-    const exe_unit_tests = b.addTest(.{
+    const exe_unit_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
-    });
+    }) });
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const rl = @import("raylib");
+const rlg = @import("raygui");
 //const stack = @import("stack.zig");
 
 const Allocator = std.mem.Allocator;
@@ -25,6 +26,7 @@ const TileMasks = struct {
 
 //[x][y] access
 var tiles: [MapWidth][MapHeight]u8 = [_][MapHeight]u8{[_]u8{0b1111} ** MapHeight} ** MapWidth;
+var iter_per_frame: f32 = 1;
 
 //todo doesnt draw left border edges at x=0
 fn drawPass(dfs_args: DfsArgs) void {
@@ -63,11 +65,19 @@ fn drawPass(dfs_args: DfsArgs) void {
             }
         }
     }
+
+    rl.drawRectangle(680, 10, 320, 180, .light_gray);
+    _ = rlg.groupBox(.{ .x = 690, .y = 20, .width = 300, .height = 160 }, "Controls");
+    _ = rlg.label(.{ .x = 720, .y = 50, .width = 220, .height = 20 }, "DFS iterations per frame");
+    _ = rlg.slider(.{ .x = 720, .y = 80, .width = 220, .height = 20 }, "1", "100", &iter_per_frame, 1, 100);
+    _ = rlg.label(.{ .x = 720, .y = 110, .width = 220, .height = 20 }, "Press enter to restart.");
     rl.endDrawing();
 }
 
 //center of maze can be deepest tile reached by DFS
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+var gpa = std.heap.c_allocator;
+var threaded = std.Io.Threaded.init_single_threaded;
+var io = threaded.io();
 const Idx = struct { x: usize, y: usize };
 
 const DfsArgs = struct { stack: *std.ArrayList(Idx), map: *[MapWidth][MapHeight]u8, allocator: Allocator, finish: Idx, finish_depth: usize, path: std.ArrayList(Idx) };
@@ -84,30 +94,30 @@ fn dfs_iter(dfs_args: *DfsArgs) !bool { //returns true when finished.
     if (dfs_args.stack.items.len > dfs_args.finish_depth) {
         dfs_args.finish_depth = dfs_args.stack.items.len;
         dfs_args.finish = current;
-        dfs_args.path = try dfs_args.stack.clone();
+        dfs_args.path = try dfs_args.stack.clone(gpa);
     }
 
     //check for unvisited neighbours
     if (current.x != 0) {
         if (dfs_args.map[current.x - 1][current.y] & TileMasks.Visited == 0)
-            try unvisited.append(Idx{ .x = current.x - 1, .y = current.y });
+            try unvisited.append(gpa, Idx{ .x = current.x - 1, .y = current.y });
     }
     if (current.y != 0) {
         if (dfs_args.map[current.x][current.y - 1] & TileMasks.Visited == 0)
-            try unvisited.append(Idx{ .x = current.x, .y = current.y - 1 });
+            try unvisited.append(gpa, Idx{ .x = current.x, .y = current.y - 1 });
     }
     if (current.x != MapWidth - 1) {
         if (dfs_args.map[current.x + 1][current.y] & TileMasks.Visited == 0)
-            try unvisited.append(Idx{ .x = current.x + 1, .y = current.y });
+            try unvisited.append(gpa, Idx{ .x = current.x + 1, .y = current.y });
     }
     if (current.y != MapHeight - 1) {
         if (dfs_args.map[current.x][current.y + 1] & TileMasks.Visited == 0)
-            try unvisited.append(Idx{ .x = current.x, .y = current.y + 1 });
+            try unvisited.append(gpa, Idx{ .x = current.x, .y = current.y + 1 });
     }
     if (unvisited.items.len == 0) { //backtrack
         _ = dfs_args.stack.pop();
     } else {
-        var prng = std.rand.DefaultPrng.init(@intCast(std.time.nanoTimestamp())); //TODO use next() instead of nano timestamp
+        var prng = std.Random.DefaultPrng.init(@intCast(std.Io.Clock.now(.real, io).nanoseconds));
         const rndn = @mod(prng.random().int(usize), unvisited.items.len);
 
         const chosen = unvisited.items[rndn];
@@ -129,37 +139,54 @@ fn dfs_iter(dfs_args: *DfsArgs) !bool { //returns true when finished.
             unreachable;
         }
 
-        try dfs_args.stack.append(chosen);
+        try dfs_args.stack.append(gpa, chosen);
     }
     return false;
 }
 
 pub fn main() !void {
-    var stack = try std.ArrayList(Idx).initCapacity(gpa.allocator(), TileHeight * TileWidth);
-    defer stack.deinit();
+    var stack = try std.ArrayList(Idx).initCapacity(gpa, TileHeight * TileWidth);
+    defer stack.deinit(gpa);
 
     rl.initWindow(WindowWidth, WindowHeight, "zig raylib window");
 
     //start tile
     tiles[5][0] = tiles[5][0] | TileMasks.StartTile;
-    try stack.append(Idx{ .x = 5, .y = 0 });
+    try stack.append(gpa, Idx{ .x = 5, .y = 0 });
 
     var exit = false;
     var dfs_complete = false;
     var iteration: u32 = 0;
 
     var dfs_args = DfsArgs{
-        .allocator = gpa.allocator(),
+        .allocator = gpa,
         .finish = Idx{ .x = 5, .y = 0 },
         .finish_depth = 0,
         .map = &tiles,
         .stack = &stack,
-        .path = try stack.clone(),
+        .path = try stack.clone(gpa),
     };
 
     while (!exit) {
         if (rl.isKeyPressed(rl.KeyboardKey.escape) or rl.windowShouldClose()) exit = true;
-        for (0..1) |_| {
+
+        if (rl.isKeyPressed(rl.KeyboardKey.enter)) {
+            //TODO this is borked, path doesnt render properly after reset
+            for (&tiles) |*row| {
+                @memset(row, 0b1111);
+            }
+            dfs_complete = false;
+            iteration = 0;
+            stack.deinit(gpa);
+            stack = try std.ArrayList(Idx).initCapacity(gpa, TileHeight * TileWidth);
+            tiles[5][0] = tiles[5][0] | TileMasks.StartTile;
+            try stack.append(gpa, Idx{ .x = 5, .y = 0 });
+            dfs_args.path = try stack.clone(gpa);
+            dfs_args.finish = Idx{ .x = 5, .y = 0 };
+            dfs_args.finish_depth = 0;
+        }
+
+        for (0..@intFromFloat(iter_per_frame)) |_| {
             if (!dfs_complete) {
                 iteration += 1;
                 //std.debug.print("iteration: {d}\n", .{iteration});
@@ -167,6 +194,7 @@ pub fn main() !void {
                 if (dfs_complete) std.debug.print("finished DFS after {d} iterations.\n", .{iteration});
             }
         }
+
         drawPass(dfs_args);
     }
 }
